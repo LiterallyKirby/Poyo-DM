@@ -3,18 +3,22 @@ package main
 import (
 	"fmt"
 	"log"
-	"os"
-	"os/exec" // For executing commands
+	"os" // For executing commands
+	"os/exec"
 	"path/filepath"
 	"strings"
 
 	"github.com/gotk3/gotk3/gtk"
+	"github.com/msteinert/pam" // Import the PAM library
+	"gopkg.in/ini.v1"
 )
 
 type Option struct {
 	Name string
 	Path string
 }
+
+var selectionExec string
 
 func main() {
 	// Initialize GTK
@@ -28,7 +32,8 @@ func main() {
 	win.SetTitle("Poyo")
 	win.SetDefaultSize(400, 200)
 	win.Connect("destroy", func() {
-		gtk.MainQuit()
+		fmt.Println("Imma assume u know what you doing")
+		gtk.MainQuit() // Exit the GTK main loop
 	})
 
 	// Create a vertical box to hold UI elements
@@ -64,8 +69,23 @@ func main() {
 		if err != nil {
 			log.Fatal("Error getting text from entry:", err)
 		}
-		fmt.Printf("Username: %s\n", username)
+		password, err := password_field.GetText()
+		if err != nil {
+			log.Fatal("Error getting text from entry:", err)
+		}
+
 		// Here you can add your authentication logic
+		if authCheck(username, password) {
+			log.Println("Authentication successful")
+			if selectionExec != "" {
+				launchDesktop(selectionExec) // Launch the selected desktop environment
+				gtk.MainQuit()               // Exit the GTK main loop
+			}
+		} else {
+			log.Println("Authentication failed")
+			password_field.SetText("") // Clear the password field if authentication fails
+
+		}
 	})
 
 	// Create a Menu for the pop-out selection
@@ -85,7 +105,13 @@ func main() {
 		// Connect the activate signal
 		entry.Connect("activate", func() {
 			selectionLabel.SetText(fmt.Sprintf("Current Selection: %s", desktopCopy.Name)) // Update the label with the selected session
-			launchDesktop(desktopCopy)                                                     // Launch the selected app when the menu item is activated
+			// Launch the selected app when the menu item is activated
+			f, err := parseExecCommand(desktopCopy.Path) // Parse the Exec command from the .desktop file
+			if err != nil {
+				log.Fatal("Error parsing .desktop file:", err)
+			}
+			println(f) // Print the Exec command
+			selectionExec = f
 		})
 
 		menu.Add(entry) // Add the menu item to the menu
@@ -151,16 +177,51 @@ func main() {
 	}
 */
 
-func authCheck() {
+func authCheck(username, password string) bool {
+	t, err := pam.StartFunc("login", username, func(s pam.Style, msg string) (string, error) {
+		return password, nil
+	})
+	if err != nil {
+		log.Println("PAM start failed:", err)
+		return false
+	}
+
+	err = t.Authenticate(0)
+	if err != nil {
+		log.Println("Authentication failed:", err)
+		return false
+	}
+
+	return true
 }
 
-func launchDesktop(desktop *Option) {
-	cmd := parseDesktop(desktop)
+func launchDesktop(desktopExec string) {
+	parts := strings.Fields(desktopExec)
+	// cmd := exec.Command("sh", "-c", desktopExec)
+	cmd := exec.Command(parts[0], parts[1:]...) // Split the command and arguments
 
-	err := exec.Command(cmd).Start() // Start the command to launch the desktop environment
+	err := cmd.Start()
+	if err != nil {
+		log.Fatal("Failed to launch desktop:", err)
+	}
 }
 
-func parseDesktop(desktop *Option) string {
+// Parses the Exec= command from a .desktop file
+
+func parseExecCommand(filePath string) (string, error) {
+	cfg, err := ini.Load(filePath)
+	if err != nil {
+		return "", fmt.Errorf("failed to read .desktop file: %v", err)
+	}
+
+	execCmd := cfg.Section("Desktop Entry").Key("Exec").String()
+
+	// Avoid shell metacharacters to prevent command injection
+	if strings.ContainsAny(execCmd, "&|;`$<>") {
+		return "", fmt.Errorf("potentially unsafe Exec command: %s", execCmd)
+	}
+
+	return execCmd, nil
 }
 
 func findDesktops() []*Option {
